@@ -13,9 +13,17 @@
 //! efficiency, the next-turn street and distance, Lane Change Assist); those
 //! keep their default and are listed there too.
 
+use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use tonic::metadata::{Ascii, MetadataValue};
+use tonic::service::Interceptor;
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use crate::telemetry::{Beam, Cruise, Lane, Telemetry, TelemetrySource, Warn};
 
@@ -384,6 +392,126 @@ pub fn datapoint(v: TypedValue) -> Datapoint {
     }
 }
 
+// ----- the connection --------------------------------------------------------
+
+/// The databroker's default address, without TLS.
+pub const DEFAULT_URL: &str = "http://127.0.0.1:55555";
+
+/// Where the databroker is and how to authenticate to it.
+///
+/// An `https://` URL turns on TLS. AGL's broker accepts only TLS with a JWT
+/// token, so the environment can name the CA certificate, the server name
+/// in its certificate, and a token file (see docs/kuksa.md):
+///
+/// - `KUKSA_CA_CERT`: PEM file of the CA that signed the broker's certificate
+///   (AGL: `/etc/kuksa-val/CA.pem`). Without it, an `https://` URL fails.
+/// - `KUKSA_TLS_SERVER_NAME`: name to check the certificate against, when it
+///   is not the URL's host (AGL's certificate is for `localhost`).
+/// - `KUKSA_TOKEN_FILE`: file holding a JWT token, sent as
+///   `authorization: Bearer <token>` with every request.
+#[derive(Clone, Debug)]
+pub struct Broker {
+    pub url: String,
+    pub ca_cert: Option<PathBuf>,
+    pub tls_server_name: Option<String>,
+    pub token_file: Option<PathBuf>,
+}
+
+impl Broker {
+    /// `url` plus the TLS and token settings from the environment.
+    pub fn from_env(url: &str) -> Self {
+        let path = |name| {
+            env::var_os(name)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
+        Self {
+            url: url.to_owned(),
+            ca_cert: path("KUKSA_CA_CERT"),
+            tls_server_name: env::var("KUKSA_TLS_SERVER_NAME")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            token_file: path("KUKSA_TOKEN_FILE"),
+        }
+    }
+
+    /// Connect and return a `VAL` client that sends the token, if any. The
+    /// files are read on every call, so a replaced token is picked up on the
+    /// next reconnect.
+    pub async fn client(&self) -> Result<ValClient, tonic::Status> {
+        let invalid = |what: &str, e: &dyn std::fmt::Display| {
+            tonic::Status::invalid_argument(format!("{what}: {e}"))
+        };
+        let mut endpoint = Endpoint::from_shared(self.url.clone())
+            .map_err(|e| invalid("URL", &e))?
+            .connect_timeout(Duration::from_secs(3));
+        if self.url.starts_with("https://") {
+            let ca = self.ca_cert.as_ref().ok_or_else(|| {
+                tonic::Status::invalid_argument("an https:// URL needs KUKSA_CA_CERT")
+            })?;
+            let pem = fs::read(ca).map_err(|e| invalid(&ca.display().to_string(), &e))?;
+            let mut tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem));
+            if let Some(name) = &self.tls_server_name {
+                tls = tls.domain_name(name);
+            }
+            endpoint = endpoint.tls_config(tls).map_err(|e| invalid("TLS", &e))?;
+        }
+        let token = match &self.token_file {
+            Some(file) => {
+                let text = fs::read_to_string(file)
+                    .map_err(|e| invalid(&file.display().to_string(), &e))?;
+                let value = format!("Bearer {}", text.trim())
+                    .parse::<MetadataValue<Ascii>>()
+                    .map_err(|e| invalid(&file.display().to_string(), &e))?;
+                Some(value)
+            }
+            None => None,
+        };
+        let channel = endpoint
+            .connect()
+            .await
+            .map_err(|e| tonic::Status::unavailable(error_chain(&e)))?;
+        Ok(proto::val_client::ValClient::with_interceptor(
+            channel,
+            Bearer(token),
+        ))
+    }
+}
+
+/// The client type `Broker::client` returns.
+pub type ValClient = proto::val_client::ValClient<InterceptedService<Channel, Bearer>>;
+
+/// Adds `authorization: Bearer <token>` to every request when there is a token.
+#[derive(Clone)]
+pub struct Bearer(Option<MetadataValue<Ascii>>);
+
+impl Interceptor for Bearer {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        if let Some(token) = &self.0 {
+            request
+                .metadata_mut()
+                .insert("authorization", token.clone());
+        }
+        Ok(request)
+    }
+}
+
+/// A transport error with its causes. tonic's own message is only
+/// "transport error", which hides a refused connection or a bad certificate.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut msg = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        msg.push_str(": ");
+        msg.push_str(&c.to_string());
+        cause = c.source();
+    }
+    msg
+}
+
 // ----- the source ------------------------------------------------------------
 
 /// A `TelemetrySource` fed by a Kuksa databroker subscription.
@@ -397,12 +525,11 @@ pub struct KuksaSource {
 }
 
 impl KuksaSource {
-    /// Subscribe to `url` (e.g. `"http://127.0.0.1:55555"`). Never fails: a
-    /// broker that cannot be reached is retried in the background.
-    pub fn connect(url: &str) -> Self {
+    /// Subscribe to `broker`. Never fails: a broker that cannot be reached
+    /// is retried in the background.
+    pub fn connect(broker: Broker) -> Self {
         let latest = Arc::new(Mutex::new(Telemetry::default()));
         let shared = Arc::clone(&latest);
-        let url = url.to_owned();
         thread::Builder::new()
             .name("kuksa-rx".into())
             .spawn(move || {
@@ -410,7 +537,7 @@ impl KuksaSource {
                     .enable_all()
                     .build()
                     .expect("tokio runtime");
-                rt.block_on(rx_loop(&url, &shared));
+                rt.block_on(rx_loop(&broker, &shared));
             })
             .expect("spawn Kuksa client thread");
         Self { latest }
@@ -426,11 +553,12 @@ impl TelemetrySource for KuksaSource {
     }
 }
 
-async fn rx_loop(url: &str, shared: &Mutex<Telemetry>) {
+async fn rx_loop(broker: &Broker, shared: &Mutex<Telemetry>) {
+    let url = &broker.url;
     let mut sig = Signals::default();
     let mut last_err: Option<String> = None;
     loop {
-        match subscribe(url, shared, &mut sig).await {
+        match subscribe(broker, shared, &mut sig).await {
             Ok(()) => {
                 eprintln!("agl-slint-cluster: {url}: subscription ended; reconnecting");
                 last_err = None;
@@ -449,17 +577,11 @@ async fn rx_loop(url: &str, shared: &Mutex<Telemetry>) {
 }
 
 async fn subscribe(
-    url: &str,
+    broker: &Broker,
     shared: &Mutex<Telemetry>,
     sig: &mut Signals,
 ) -> Result<(), tonic::Status> {
-    let channel = tonic::transport::Endpoint::from_shared(url.to_owned())
-        .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?
-        .connect_timeout(Duration::from_secs(3))
-        .connect()
-        .await
-        .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
-    let mut client = proto::val_client::ValClient::new(channel);
+    let mut client = broker.client().await?;
     let request = proto::SubscribeRequest {
         signal_paths: PATHS.iter().map(|p| p.to_string()).collect(),
         buffer_size: 0,
@@ -467,8 +589,9 @@ async fn subscribe(
     };
     let mut stream = client.subscribe(request).await?.into_inner();
     eprintln!(
-        "agl-slint-cluster: subscribed to {} VSS signals at {url}",
-        PATHS.len()
+        "agl-slint-cluster: subscribed to {} VSS signals at {}",
+        PATHS.len(),
+        broker.url
     );
     while let Some(update) = stream.message().await? {
         let mut t = shared.lock().unwrap_or_else(|e| e.into_inner());

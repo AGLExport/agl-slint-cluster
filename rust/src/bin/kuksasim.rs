@@ -10,24 +10,25 @@
 //! cargo run --bin kuksasim            # defaults to http://127.0.0.1:55555
 //! CLUSTER_SOURCE=kuksa cargo run
 //! ```
+//!
+//! The same `KUKSA_CA_CERT`, `KUKSA_TLS_SERVER_NAME` and `KUKSA_TOKEN_FILE`
+//! as the cluster set up TLS and the token; the token needs the `provide`
+//! scope.
 
 use std::env;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use agl_slint_cluster::kuksa::proto::val_client::ValClient;
 use agl_slint_cluster::kuksa::proto::{PublishValueRequest, SignalId, signal_id};
-use agl_slint_cluster::kuksa::{self, proto::value::TypedValue};
+use agl_slint_cluster::kuksa::{self, Broker, DEFAULT_URL, proto::value::TypedValue};
 use agl_slint_cluster::sim::SimSource;
 use agl_slint_cluster::telemetry::TelemetrySource;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
-    let url = args
-        .next()
-        .unwrap_or_else(|| "http://127.0.0.1:55555".into());
+    let url = args.next().unwrap_or_else(|| DEFAULT_URL.into());
     if url.starts_with('-') || args.next().is_some() {
-        eprintln!("usage: kuksasim [URL]   (default: http://127.0.0.1:55555)");
+        eprintln!("usage: kuksasim [URL]   (default: {DEFAULT_URL})");
         return ExitCode::from(2);
     }
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -44,7 +45,7 @@ fn main() -> ExitCode {
 }
 
 async fn run(url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = ValClient::connect(url.to_owned()).await?;
+    let mut client = Broker::from_env(url).client().await?;
     eprintln!("kuksasim: publishing the drive cycle to {url} (Ctrl-C to stop)");
 
     let mut sim = SimSource::new();

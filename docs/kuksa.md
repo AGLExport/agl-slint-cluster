@@ -37,8 +37,48 @@ kuksa-client grpc://127.0.0.1:55555
 `CLUSTER_SOURCE=kuksa` connects to `http://127.0.0.1:55555`;
 `CLUSTER_SOURCE=kuksa:http://host:port` names another broker. The connection
 is retried whenever the broker is unreachable or the stream ends, so the
-cluster may start before the broker. No TLS or token support: on AGL the
-broker runs on the same board.
+cluster may start before the broker.
+
+## TLS and tokens (AGL's broker)
+
+AGL's databroker accepts only TLS, and checks a JWT token on every request
+(`/etc/default/kuksa-databroker` starts it with `--tls-cert` and
+`--jwt-public-key`). An `https://` URL turns on TLS, and three environment
+variables, read by both the cluster and `kuksasim`, supply the rest:
+
+| Variable                | Meaning                                                          |
+|-------------------------|------------------------------------------------------------------|
+| `KUKSA_CA_CERT`         | PEM file of the CA that signed the broker's certificate; required for `https://` |
+| `KUKSA_TLS_SERVER_NAME` | Name to check the certificate against, if not the URL's host     |
+| `KUKSA_TOKEN_FILE`      | File with a JWT token, sent as `authorization: Bearer <token>`   |
+
+On AGL, the certificate is for `localhost`, and each application has its own
+token, signed for AGL's `jwt.key.pub` (see `cluster-dashboard.token` in
+meta-agl-demo). The cluster needs the `read` scope, and `kuksasim` the
+`provide` scope:
+
+```sh
+CLUSTER_SOURCE=kuksa:https://127.0.0.1:55555 \
+KUKSA_TLS_SERVER_NAME=localhost \
+KUKSA_CA_CERT=/etc/kuksa-val/CA.pem \
+KUKSA_TOKEN_FILE=/etc/xdg/AGL/agl-slint-cluster/agl-slint-cluster.token \
+agl-slint-cluster
+```
+
+The files are read on every connection attempt, so a replaced token is used
+from the next reconnect. To try this on a workstation, start the broker
+container with AGL's certificate and public key (from
+`meta-agl-demo/recipes-connectivity/kuksa-val/kuksa-certificates-agl`):
+
+```sh
+docker run --rm -p 55555:55555 -v $PWD:/certs:ro \
+  ghcr.io/eclipse-kuksa/kuksa-databroker:0.6.0 \
+  --tls-cert /certs/Server.pem --tls-private-key /certs/Server.key \
+  --jwt-public-key /certs/jwt.key.pub
+```
+
+`cargo test --test kuksa` runs against such a broker when `KUKSA_TEST_URL`
+and the variables above are set; its token needs `provide`.
 
 ## Signal mapping
 

@@ -120,7 +120,8 @@ Set `CLUSTER_SOURCE=kuksa` (or `kuksa:<url>`) and the cluster subscribes to
 the [Eclipse Kuksa](https://eclipse-kuksa.github.io/kuksa-website/) databroker
 that AGL ships, reading its signals by their VSS names (`Vehicle.Speed`,
 `Vehicle.Body.Lights.Beam.Low.IsOn`, ...). The mapping is in
-[`docs/kuksa.md`](docs/kuksa.md). With a broker in a container, `kuksasim`
+[`docs/kuksa.md`](docs/kuksa.md), with the TLS and token settings that
+AGL's broker requires. With a broker in a container, `kuksasim`
 plays the vehicle:
 
 ```sh

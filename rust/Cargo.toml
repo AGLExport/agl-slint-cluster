@@ -19,8 +19,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # (KMS/DRM on the board, a window on the workstation), so it is unconditional.
 socketcan = { version = "4.0", default-features = false }
 # Eclipse Kuksa databroker client (kuksa.val.v2 over gRPC), for the `kuksa`
-# telemetry source. Client side only: no server, no TLS.
-tonic = { version = "0.14", default-features = false, features = ["channel", "codegen"] }
+# telemetry source. Client side only, no server. TLS (rustls with ring) is for
+# AGL's broker, which only accepts TLS connections with a JWT token.
+tonic = { version = "0.14", default-features = false, features = ["channel", "codegen", "tls-ring"] }
 tonic-prost = "0.14"
 prost = "0.14"
 prost-types = "0.14"

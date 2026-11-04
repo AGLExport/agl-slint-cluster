@@ -13,7 +13,11 @@ Environment=SLINT_FULLSCREEN=1
 # bus (CLUSTER_SOURCE=can:can0, see docs/can.md), the Kuksa databroker
 # (CLUSTER_SOURCE=kuksa, see docs/kuksa.md) or an OBD-II dongle
 # (CLUSTER_SOURCE=obd:bt:<address>, see docs/obd.md).
-#Environment=CLUSTER_SOURCE=kuksa
+# AGL's broker needs TLS and a token with the read scope:
+#Environment=CLUSTER_SOURCE=kuksa:https://127.0.0.1:55555
+#Environment=KUKSA_TLS_SERVER_NAME=localhost
+#Environment=KUKSA_CA_CERT=/etc/kuksa-val/CA.pem
+#Environment=KUKSA_TOKEN_FILE=/etc/xdg/AGL/agl-slint-cluster/agl-slint-cluster.token
 ExecStart=/usr/bin/agl-slint-cluster
 Restart=on-failure
 RestartSec=2

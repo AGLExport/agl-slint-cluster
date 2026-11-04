@@ -6,17 +6,18 @@
 //! (passes) when no broker answers on 127.0.0.1:55555; start one with
 //! `docker run --rm -p 55555:55555 ghcr.io/eclipse-kuksa/kuksa-databroker:0.6.0 --insecure`.
 //! Stop `kuksasim` first: it keeps overwriting the very signals this publishes.
+//!
+//! `KUKSA_TEST_URL` names another broker. With `KUKSA_CA_CERT`,
+//! `KUKSA_TLS_SERVER_NAME` and `KUKSA_TOKEN_FILE` it runs against a TLS broker
+//! that checks tokens, such as AGL's; the token needs `read` and `provide`.
 
 use std::thread;
 use std::time::{Duration, Instant};
 
-use agl_slint_cluster::kuksa::proto::val_client::ValClient;
 use agl_slint_cluster::kuksa::proto::value::TypedValue;
 use agl_slint_cluster::kuksa::proto::{PublishValueRequest, SignalId, signal_id};
-use agl_slint_cluster::kuksa::{self, KuksaSource};
+use agl_slint_cluster::kuksa::{self, Broker, DEFAULT_URL, KuksaSource};
 use agl_slint_cluster::telemetry::{Beam, TelemetrySource, Warn};
-
-const URL: &str = "http://127.0.0.1:55555";
 
 #[test]
 fn published_values_reach_the_source() {
@@ -24,17 +25,18 @@ fn published_values_reach_the_source() {
         .enable_all()
         .build()
         .unwrap();
-    let Ok(mut client) = rt.block_on(async {
-        tokio::time::timeout(Duration::from_secs(2), ValClient::connect(URL))
-            .await
-            .map_err(|_| ())?
-            .map_err(|_| ())
-    }) else {
-        eprintln!("no databroker at {URL}: skipping");
-        return;
+    let url = std::env::var("KUKSA_TEST_URL").unwrap_or_else(|_| DEFAULT_URL.into());
+    let broker = Broker::from_env(&url);
+    let mut client = match rt.block_on(broker.client()) {
+        Ok(client) => client,
+        Err(e) if e.code() == tonic::Code::Unavailable => {
+            eprintln!("no databroker at {url} ({e}): skipping");
+            return;
+        }
+        Err(e) => panic!("{url}: {e}"),
     };
 
-    let mut src = KuksaSource::connect(URL);
+    let mut src = KuksaSource::connect(broker);
     // Let the subscription settle before publishing.
     thread::sleep(Duration::from_millis(500));
 
