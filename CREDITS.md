@@ -32,4 +32,10 @@ Some bundled assets originate elsewhere:
   **Apache License 2.0**; the `kuksa` telemetry source compiles them at build
   time. The MIT license of this repository does not cover them.
 
+- **AGL virtual car CAN signals** (`rust/src/vcar.rs`) implement the message
+  layout published by the [Automotive Grade Linux](https://www.automotivelinux.org/)
+  `src/agl-dbc` project (`agl-vcar.dbc` and its `doc/`). The DBC file itself
+  is not bundled; the code here is original and MIT like the rest of the
+  source.
+
 - [Slint](https://slint.dev/) provides the UI toolkit. See its own licensing.

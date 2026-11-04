@@ -1,11 +1,19 @@
 # CAN interface
 
 The cluster can take its signals from a CAN bus instead of the built-in
-simulation. The bus carries exactly the fields of the `Telemetry` struct
-(`rust/src/telemetry.rs`), split over six classic CAN frames with 11-bit
-identifiers. The same layout is described for other tools in
-[`can/agl-slint-cluster.dbc`](../can/agl-slint-cluster.dbc), and encoded and
-decoded by `rust/src/can.rs`; keep the three in step.
+simulation. It understands two sets of frames, which do not overlap, so a bus
+may carry either or both:
+
+- **The cluster's own frames** carry exactly the fields of the `Telemetry`
+  struct (`rust/src/telemetry.rs`), split over six classic CAN frames with
+  11-bit identifiers. The same layout is described for other tools in
+  [`can/agl-slint-cluster.dbc`](../can/agl-slint-cluster.dbc), and encoded and
+  decoded by `rust/src/can.rs`; keep the three in step.
+- **The AGL virtual car (agl-vcar) messages** are the CAN database that
+  Automotive Grade Linux's demos share, so the cluster can be driven by the
+  same simulators and CAN devices as AGL's stock instrument cluster. They are
+  decoded by `rust/src/vcar.rs`; see [AGL virtual car](#agl-virtual-car-agl-vcar)
+  below.
 
 ## Quick start on a virtual bus
 
@@ -44,6 +52,10 @@ and the DBC it is decoded into signal names:
 ```sh
 candump vcan0 | cantools decode ../can/agl-slint-cluster.dbc
 ```
+
+`cansim` also sends the agl-vcar messages for the fields they cover (speed,
+fuel, turn signals, gear, doors, seat belts, lamps), so AGL's own tools see a
+plausible AGL vehicle on the same bus.
 
 On a board, name the real interface: `CLUSTER_SOURCE=can` reads `can0`, and
 `CLUSTER_SOURCE=can:can1` any other. The interface is reopened whenever it is
@@ -115,3 +127,53 @@ The next-turn street name as UTF-8, up to 28 bytes, in chunks of 7:
 
 Chunk 0 starts a new name, so a name of 7 bytes or fewer needs a single frame.
 Trailing bytes may be omitted (shorter DLC) or padded with `0x00`.
+
+## AGL virtual car (agl-vcar)
+
+[agl-vcar](https://git.automotivelinux.org/src/agl-dbc/) ("AGL Virtual Car
+1.0", `agl-vcar.dbc` and `doc/` in the `src/agl-dbc` repository, commit
+`ad41d4910236`) is the CAN database Automotive Grade Linux's demos share: the
+Kuksa CAN provider turns it into VSS signals, and AGL's own instrument cluster
+reads it directly. The cluster decodes the agl-vcar messages that carry
+something it shows, in addition to its own frames, so it can be dropped into
+an AGL image and fed by the same simulators and CAN devices as the stock one.
+
+The DBC is not bundled here (the agl-dbc repository carries only AGL's generic
+layer licence text); the layout is implemented from AGL's published tables.
+To decode a bus with cantools, fetch the DBC from AGL:
+
+```sh
+curl -O https://git.automotivelinux.org/src/agl-dbc/plain/agl-vcar.dbc
+candump vcan0 | cantools decode agl-vcar.dbc
+```
+
+Messages and signals used. Byte order is as in the DBC: `@0` big-endian
+(Motorola, start bit is the MSB), `@1` little-endian.
+
+| ID (dec / hex) | Message            | Signal                | Bits      | `Telemetry`                                     |
+|----------------|--------------------|-----------------------|-----------|-------------------------------------------------|
+| 1001 / 0x3E9   | `Vehicle_Status_1` | `PT_VehicleSpeed`     | 7\|15@0, x0.015625 km/h | `speed_kmh`                                     |
+| 985 / 0x3D9    | `Vehicle_Status_2` | `PT_FuelLevelPct`     | 8\|8@1, x0.392157 %     | `fuel_level`                                    |
+| 986 / 0x3DA    | `Vehicle_Status_3` | `PT_HazardOn`, `PT_LeftTurnOn`, `PT_RightTurnOn` | 0\|1, 1\|1, 2\|1 @1 | `turn_left`, `turn_right` (hazard sets both) |
+| 142 / 0x08E    | `BCM_Status`       | `FrontLeftDoor` .. `RearLeftDoor` | 4..7\|1@0, 1 = open | `door_open` (any door)                        |
+|                |                    | `LeftSeatBelt`        | 12\|1@0, 1 = fastened | `seatbelt` (driver's belt unfastened)           |
+| 180 / 0x0B4    | `EV_Powertrain`    | `EV_ShiftPosition`    | 12\|3@0: 1 P, 2 R, 3 N, 4 D, 5 B | `gear` (0, 6, 7 leave it unchanged)       |
+|                |                    | `EV_MotorFaultLamp`   | 1\|1@0    | `engine` (amber)                                |
+| 184 / 0x0B8    | `ESP`              | `AbsFaultLamp`        | 27\|1@0   | `abs` (red)                                     |
+| 532 / 0x214    | `Transmission`     | `Gear`                | 7\|8@0, offset -1 | `gear`, as VSS `SelectedGear` (126 P, 127 D, 0 N, <0 R) |
+
+Everything else the cluster shows (power, efficiency, charge, range, trip,
+cruise, lane, navigation, headlights, parking brake, oil and 12 V lamps) has
+no agl-vcar message; it comes from the cluster's own frames above, or from
+[Kuksa](kuksa.md), where AGL's VSS overlay already maps `PT_VehicleSpeed`, the
+turn signals and `Gear` from agl-vcar.
+
+Some examples with `cansend`:
+
+```sh
+cansend vcan0 3E9#3200000000000000   # PT_VehicleSpeed 100 km/h (0x32 << 7 x 0.015625)
+cansend vcan0 3DA#0100000000000000   # hazard lights
+cansend vcan0 0B4#0010000000000000   # EV_ShiftPosition 4 = D
+cansend vcan0 0B8#0000000800000000   # AbsFaultLamp
+cansend vcan0 08E#1000000000000000   # front left door open (and the driver's belt unfastened)
+```

@@ -11,6 +11,10 @@
 //! A frame updates only the fields it carries, so a sender is free to emit a
 //! subset -- e.g. just `MOTION` from a bench script -- and the rest keeps its
 //! last (or default) value.
+//!
+//! The same source also understands the AGL virtual car (agl-vcar) messages
+//! that AGL's demos and its Kuksa CAN provider use; see `vcar.rs`. The two ID
+//! sets do not overlap, so a bus may carry either or both.
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -227,8 +231,9 @@ fn u32_at(d: &[u8], i: usize) -> u32 {
 
 /// Apply one CAN message to `t`. A frame may be shorter than its message:
 /// only the fields it fully contains are updated, so `cansend vcan0 100#1027`
-/// sets the speed and nothing else. Returns `false` for an ID this cluster
-/// does not know; `t` is then untouched.
+/// sets the speed and nothing else. IDs that are not the cluster's own are
+/// tried as agl-vcar messages (`vcar::decode`). Returns `false` for an ID
+/// neither knows; `t` is then untouched.
 pub fn decode(t: &mut Telemetry, street: &mut StreetBuffer, id: u16, d: &[u8]) -> bool {
     let n = d.len();
     match id {
@@ -341,7 +346,7 @@ pub fn decode(t: &mut Telemetry, street: &mut StreetBuffer, id: u16, d: &[u8]) -
                 t.turn_street = street.text();
             }
         }
-        _ => return false,
+        _ => return crate::vcar::decode(t, id, d),
     }
     true
 }
@@ -575,6 +580,20 @@ mod tests {
         assert_eq!(t.engine, Warn::Red);
         // A single byte cannot carry a 16-bit field; it is left alone.
         assert!(decode(&mut t, &mut s, ID_MOTION, &[0xff]));
+        assert_eq!(t.speed_kmh, 100.0);
+    }
+
+    #[test]
+    fn agl_vcar_ids_are_decoded_too() {
+        let mut t = Telemetry::default();
+        let mut s = StreetBuffer::default();
+        // PT_VehicleSpeed: 0x32 << 7 raw = 100 km/h
+        assert!(decode(
+            &mut t,
+            &mut s,
+            crate::vcar::ID_VEHICLE_STATUS_1,
+            &[0x32, 0, 0, 0, 0, 0, 0, 0]
+        ));
         assert_eq!(t.speed_kmh, 100.0);
     }
 

@@ -3,8 +3,10 @@
 
 //! Play the vehicle: run the built-in drive-cycle simulation and put it on a
 //! CAN bus, so the cluster (started with `CLUSTER_SOURCE=can:<iface>`) shows
-//! it, and `candump` shows the frames. Pointed at a virtual interface this
-//! needs no hardware at all:
+//! it, and `candump` shows the frames. Every cycle sends the cluster's own
+//! frames (`can.rs`) and the AGL virtual car messages (`vcar.rs`) for the
+//! fields agl-vcar covers, so either a stock AGL consumer or this cluster can
+//! listen. Pointed at a virtual interface this needs no hardware at all:
 //!
 //! ```sh
 //! sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0
@@ -22,6 +24,7 @@ use socketcan::{CanSocket, Socket};
 use agl_slint_cluster::can;
 use agl_slint_cluster::sim::SimSource;
 use agl_slint_cluster::telemetry::TelemetrySource;
+use agl_slint_cluster::vcar;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -52,7 +55,7 @@ fn main() -> ExitCode {
         last = now;
 
         let frame = sim.poll(dt);
-        for m in can::encode(&frame) {
+        for m in can::encode(&frame).into_iter().chain(vcar::encode(&frame)) {
             if let Err(e) = sock.write_frame(&can::to_frame(&m)) {
                 eprintln!("cansim: {iface}: write failed: {e}");
                 return ExitCode::FAILURE;

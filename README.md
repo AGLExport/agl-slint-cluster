@@ -98,8 +98,11 @@ repository is the application source only.
 ### From a CAN bus
 
 Set `CLUSTER_SOURCE=can` (or `can:<iface>`) and the cluster reads its signals
-from a SocketCAN interface instead of the built-in simulation. The frame layout
-is small and documented in [`docs/can.md`](docs/can.md), with a DBC in `can/`
+from a SocketCAN interface instead of the built-in simulation. It understands
+the [AGL virtual car](https://git.automotivelinux.org/src/agl-dbc/) (agl-vcar)
+messages that AGL's demos share, so AGL's CAN simulators drive it, plus its own
+small frame layout for the fields agl-vcar has no message for. Both are
+documented in [`docs/can.md`](docs/can.md), with a DBC for the latter in `can/`
 for tools like cantools or SavvyCAN. To play with it without hardware, put the
 simulation on a virtual bus:
 
@@ -108,6 +111,7 @@ sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0
 CLUSTER_SOURCE=can:vcan0 cargo run &     # in rust/
 cargo run --bin cansim                   # sends the drive cycle on vcan0
 cansend vcan0 104#15                     # ..and poke at it: indicator, low beam, parking brake
+cansend vcan0 3E9#3200                   # ..or as the AGL virtual car: PT_VehicleSpeed 100 km/h
 ```
 
 ### From a Kuksa databroker (VSS)

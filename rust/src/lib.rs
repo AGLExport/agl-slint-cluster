@@ -11,3 +11,4 @@ pub mod kuksa;
 pub mod obd;
 pub mod sim;
 pub mod telemetry;
+pub mod vcar;
